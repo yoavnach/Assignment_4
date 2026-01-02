@@ -142,7 +142,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    // Set TTL (optional but good practice to match output "ttl=...")
+    // Set TTL (optional)
     int ttl_val = 64;
     if (setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0) {
         perror("Set TTL option failed");

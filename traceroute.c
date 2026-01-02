@@ -177,8 +177,6 @@ int main(int argc, char *argv[]) {
                         }
                         printf("%.3fms ", rtt); // Print time [cite: 121]
                     } else {
-                        // Received packet not for us (e.g., background traffic), count as * for this logic simplicity
-                        // Ideally we should loop poll again, but simplified for assignment structure:
                         printf("* "); 
                     }
                 }

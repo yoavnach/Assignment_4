@@ -74,10 +74,10 @@ int main() {
         int total_len = sizeof(struct icmphdr) + payload_len;
         icmph->checksum = checksum(packet, total_len);
 
-        // 4. Send Packet (Fire and forget)
+        // 4. Send Packet 
         sendto(sockfd, packet, total_len, 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
 
-        // Small delay to not choke the network (optional but good practice)
+        // Small delay to not choke the network (optional)
         usleep(10000); 
     }
 
@@ -88,3 +88,12 @@ int main() {
     // 5. No output to stdout ("background")
     return 0;
 }
+
+
+
+
+
+
+
+
+

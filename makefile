@@ -32,3 +32,13 @@ tunnel.o: tunnel.c
 
 clean:
 	rm -f *.o ping traceroute port_scanning discovery tunnel
+
+
+
+
+
+
+
+
+
+	
