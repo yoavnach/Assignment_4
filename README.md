@@ -43,7 +43,7 @@ sudo ./ping -a 8.8.8.8 -c 4
 **2. Trace a route:**
 
 ```bash
-sudo ./traceroute -a google.com
+sudo ./traceroute -a 8.8.8.8
 ```
 
 **3. Scan ports (TCP or UDP):**
