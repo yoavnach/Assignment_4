@@ -14,7 +14,7 @@
 #include <errno.h>
 #include <pthread.h>
 
-#define SLEEP_USEC 1000 // 5 milliseconds
+#define SLEEP_USEC 5000 // 5 milliseconds
 #define MAX_PORT 65536
 #define MIN_PORT 1
 
@@ -238,6 +238,25 @@ void* scan_udp(void* arg) {
         udph->len    = htons(sizeof(struct udphdr));
         udph->check  = 0; // IPv4 UDP checksum יכול להיות 0
 
+        if (sendto(sock_send, packet, sizeof(struct iphdr) + sizeof(struct udphdr),
+                   0, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
+            perror("sendto failed");
+            if(errno == EPERM) {
+                printf("Run the program with sudo/root privileges.\n");
+                close(sock_send);
+                close(sock_icmp);
+                return NULL;
+            }
+            if(errno == ENOBUFS) {
+                usleep(SLEEP_USEC*2); // לחכות מעט ולנסות שוב
+                port--; // לנסות את אותו הפורט שוב
+                continue;
+            }
+            if(errno == EHOSTUNREACH) {
+                printf("Host unreachable. Stopping scan.\n");
+                break;
+            }
+        }
         (void)sendto(sock_send, packet, sizeof(struct iphdr) + sizeof(struct udphdr),
                      0, (struct sockaddr *)&dest, sizeof(dest));
 
