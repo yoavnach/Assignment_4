@@ -61,7 +61,7 @@ uint32_t get_local_ip() {
     return name.sin_addr.s_addr;
 }
 
-void* listen_icmp(void* arg) {
+void* listen_tcp_responses(void* arg) {
     struct scan_config* config = (struct scan_config*)arg;
     unsigned char buf[4096];
     
@@ -292,8 +292,8 @@ int main(int argc, char *argv[]) {
     }
     pthread_t send_thread, recv_thread;
     if (strcmp(type, "TCP") == 0) {
-        
-        pthread_create(&recv_thread, NULL, listen_icmp, &config);
+
+        pthread_create(&recv_thread, NULL, listen_tcp_responses, &config);
         pthread_create(&send_thread, NULL, scan_tcp, &config); 
     } else if (strcmp(type, "UDP") == 0) {
         pthread_create(&recv_thread, NULL, listen_udp_responses, &config);
