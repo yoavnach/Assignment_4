@@ -1,4 +1,4 @@
-all: ping traceroute port_scanning discovery tunnel
+all: ping traceroute port_scanning discovery tunnel port_scanning2
 
 ping: ping.o
 	gcc ping.o -o ping -lm
@@ -18,6 +18,11 @@ port_scanning: port_scanning.o
 port_scanning.o: port_scanning.c
 	gcc -c port_scanning.c -o port_scanning.o
 
+port_scanning2: port_scanning2.o
+	gcc port_scanning2.o -o port_scanning2
+
+port_scanning2.o: port_scanning2.c
+	gcc -c port_scanning2.c -o port_scanning2.o
 discovery: discovery.o
 	gcc discovery.o -o discovery
 
@@ -31,7 +36,7 @@ tunnel.o: tunnel.c
 	gcc -c tunnel.c -o tunnel.o
 
 clean:
-	rm -f *.o ping traceroute port_scanning discovery tunnel
+	rm -f *.o ping traceroute port_scanning discovery tunnel port_scanning2
 
 
 

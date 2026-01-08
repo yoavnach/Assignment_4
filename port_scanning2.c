@@ -12,9 +12,17 @@
 #include <netdb.h>
 #include <poll.h>
 #include <errno.h>
+#include <pthread.h>
 
-#define TIMEOUT_MS 10
+#define SLEEP_USEC 1000 // 5 milliseconds
+#define MAX_PORT 65536
+#define MIN_PORT 1
 
+struct scan_config {
+    const char* ip;
+    int sockfd;
+    uint32_t src_ip;
+};
 struct pseudo_header {
     u_int32_t source_address;
     u_int32_t dest_address;
@@ -53,10 +61,64 @@ uint32_t get_local_ip() {
     return name.sin_addr.s_addr;
 }
 
-void scan_tcp(const char* dest_ip_str, int start_port, int end_port) {
-    int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
-    if (sockfd < 0) { perror("Socket failed"); return; }
+void* listen_icmp(void* arg) {
+    struct scan_config* config = (struct scan_config*)arg;
+    unsigned char buf[4096];
+    
+    while (1) {
+        int bytes = recvfrom(config->sockfd, buf, sizeof(buf), 0, NULL, NULL);
+        if (bytes < 0) continue;
 
+        struct iphdr *recv_ip = (struct iphdr *)buf;
+        if (recv_ip->protocol != IPPROTO_TCP) continue;
+
+        struct tcphdr *recv_tcp = (struct tcphdr *)(buf + (recv_ip->ihl * 4));
+
+        // בדיקה שהתשובה מיועדת לפורט המקור שלנו ושהיא SYN-ACK
+        if (recv_tcp->dest == htons(12345)) {
+            if (recv_tcp->syn == 1 && recv_tcp->ack == 1) {
+                printf("Port %d: Open\n", ntohs(recv_tcp->source));
+            }
+        }
+    }
+    return NULL;
+}
+void* listen_udp_responses(void* arg) {
+    struct scan_config* config = (struct scan_config*)arg;
+    int udp_sock = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
+    unsigned char buf[1024];
+
+    while (1) {
+        struct sockaddr_in from;
+        socklen_t fromlen = sizeof(from);
+        int bytes = recvfrom(udp_sock, buf, sizeof(buf), 0, (struct sockaddr*)&from, &fromlen);
+        
+        if (bytes < 0) continue;
+
+        struct iphdr *iph = (struct iphdr *)buf;
+        // בדיקה שהתגובה מגיעה מה-IP שסרקנו
+        if (iph->saddr != inet_addr(config->ip)) continue;
+
+        struct udphdr *udph = (struct udphdr *)(buf + (iph->ihl * 4));
+
+        // אם היעד שלח חבילה חזרה לפורט המקור שלנו (12345)
+        if (ntohs(udph->dest) == 12345) {
+            int open_port = ntohs(udph->source); // הפורט שסרקנו ביעד
+            if (open_port >= 0 && open_port < MAX_PORT) {
+                printf("Port %d: Open (UDP Response)\n", open_port);
+            }
+        }
+    }
+    return NULL;
+}
+
+void* scan_tcp(void* arg) {
+    struct scan_config* config = (struct scan_config*)arg;
+    int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
+    if (sockfd < 0) { perror("Socket failed"); return NULL; }
+    const char* dest_ip_str = config->ip;
+    int start_port = MIN_PORT;
+    int end_port = MAX_PORT;
     int on = 1;
     setsockopt(sockfd, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on));
 
@@ -119,48 +181,34 @@ void scan_tcp(const char* dest_ip_str, int start_port, int end_port) {
         if (sendto(sockfd, packet, iph->tot_len, 0, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
             continue;
         }
-
-        struct pollfd pfd;
-        pfd.fd = sockfd;
-        pfd.events = POLLIN;
-        if (poll(&pfd, 1, TIMEOUT_MS) > 0) {
-            unsigned char buf[4096];
-            struct sockaddr_in r_addr;
-            socklen_t len = sizeof(r_addr);
-            int bytes = recvfrom(sockfd, buf, sizeof(buf), 0, (struct sockaddr *)&r_addr, &len);
-            
-            if (bytes > 0) {
-                struct iphdr *recv_ip = (struct iphdr *)buf;
-                struct tcphdr *recv_tcp = (struct tcphdr *)(buf + (recv_ip->ihl * 4));
-                
-                if (recv_ip->saddr == dest.sin_addr.s_addr && recv_tcp->dest == htons(12345)) {
-                    if (recv_tcp->syn == 1 && recv_tcp->ack == 1) {
-                        printf("Port %d: Open\n", port);
-                        
-                        tcph->syn = 0;
-                        tcph->rst = 1;
-                        tcph->seq = recv_tcp->ack_seq;
-                        sendto(sockfd, packet, iph->tot_len, 0, (struct sockaddr *)&dest, sizeof(dest));
-                    }
-                }
-            }
-        }
+        usleep(SLEEP_USEC); //to avoid flooding the network wait for 5 milliseconds
+       
     }
-    close(sockfd);
+    
+    return NULL;
 }
 
-void scan_udp(const char* dest_ip_str, int start_port, int end_port) {
+void* scan_udp(void* arg) {
+    struct scan_config* config = (struct scan_config*)arg;
     int sock_send = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
-    int sock_recv = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    
-    if (sock_send < 0 || sock_recv < 0) { perror("Socket failed"); return; }
-    
+    int sock_icmp = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    const char* dest_ip_str = config->ip;
+     int start_port = MIN_PORT;
+      int end_port = MAX_PORT;
+
     int on = 1;
-    setsockopt(sock_send, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on));
+    if (setsockopt(sock_send, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
+        perror("setsockopt IP_HDRINCL");
+        close(sock_send);
+        close(sock_icmp);
+        return NULL;
+    }
 
     struct sockaddr_in dest;
+    memset(&dest, 0, sizeof(dest));
     dest.sin_family = AF_INET;
     dest.sin_addr.s_addr = inet_addr(dest_ip_str);
+
     uint32_t src_ip = get_local_ip();
 
     printf("Starting UDP Scan on %s...\n", dest_ip_str);
@@ -171,45 +219,34 @@ void scan_udp(const char* dest_ip_str, int start_port, int end_port) {
 
         struct iphdr *iph = (struct iphdr *)packet;
         struct udphdr *udph = (struct udphdr *)(packet + sizeof(struct iphdr));
-        
+
         iph->ihl = 5;
         iph->version = 4;
-        iph->tot_len = sizeof(struct iphdr) + sizeof(struct udphdr);
+        iph->tos = 0;
+        iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr));
+        iph->id = 0;
+        iph->frag_off = 0;
         iph->ttl = 64;
         iph->protocol = IPPROTO_UDP;
         iph->saddr = src_ip;
         iph->daddr = dest.sin_addr.s_addr;
-        iph->check = checksum((unsigned short *)packet, iph->tot_len);
+        iph->check = 0;
+        iph->check = checksum((unsigned short *)iph, sizeof(struct iphdr));
 
         udph->source = htons(12345);
-        udph->dest = htons(port);
-        udph->len = htons(sizeof(struct udphdr));
-        udph->check = 0;
+        udph->dest   = htons(port);
+        udph->len    = htons(sizeof(struct udphdr));
+        udph->check  = 0; // IPv4 UDP checksum יכול להיות 0
 
-        sendto(sock_send, packet, iph->tot_len, 0, (struct sockaddr *)&dest, sizeof(dest));
+        (void)sendto(sock_send, packet, sizeof(struct iphdr) + sizeof(struct udphdr),
+                     0, (struct sockaddr *)&dest, sizeof(dest));
 
-        struct pollfd pfd;
-        pfd.fd = sock_recv;
-        pfd.events = POLLIN;
-        
-        if (poll(&pfd, 1, TIMEOUT_MS) > 0) {
-            unsigned char buf[4096];
-            struct sockaddr_in r_addr;
-            socklen_t len = sizeof(r_addr);
-            recvfrom(sock_recv, buf, sizeof(buf), 0, (struct sockaddr *)&r_addr, &len);
-            
-            struct iphdr *rip = (struct iphdr *)buf;
-            struct icmphdr *ricmp = (struct icmphdr *)(buf + (rip->ihl * 4));
-            
-            if (rip->saddr == dest.sin_addr.s_addr && ricmp->type == ICMP_DEST_UNREACH && ricmp->code == 3) {
-                 // Closed
-            } else {
-                 // Maybe open
-            }
-        }
+        usleep(SLEEP_USEC); //to avoid flooding the network wait for 5 milliseconds
     }
+
     close(sock_send);
-    close(sock_recv);
+    close(sock_icmp);
+    return NULL;
 }
 
 int main(int argc, char *argv[]) {
@@ -221,18 +258,35 @@ int main(int argc, char *argv[]) {
     char *ip = argv[2];
     char *type = argv[4];
 
+    
+
+    int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
+    if (sockfd < 0) {
+        perror("Socket creation failed");
+        exit(1);
+    }
+    struct scan_config config = {ip, sockfd, get_local_ip()};
+    int on = 1;
+    if (setsockopt(sockfd, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
+        perror("Error setting IP_HDRINCL");
+        exit(1);
+    }
+    pthread_t send_thread, recv_thread;
     if (strcmp(type, "TCP") == 0) {
-        scan_tcp(ip, 1, 65535); 
+        
+        pthread_create(&recv_thread, NULL, listen_icmp, &config);
+        pthread_create(&send_thread, NULL, scan_tcp, &config); 
     } else if (strcmp(type, "UDP") == 0) {
-        scan_udp(ip, 1, 65535);
+        pthread_create(&recv_thread, NULL, listen_udp_responses, &config);
+        pthread_create(&send_thread, NULL, scan_udp, &config); 
     } else {
         printf("Invalid type. Use TCP or UDP.\n");
     }
-
+    
+    pthread_join(send_thread, NULL);
+    printf("Waiting for final responses...\n");
+    sleep(2);
+    pthread_cancel(recv_thread);
+    close(sockfd);
     return 0;
 }
-
-
-
-
-
